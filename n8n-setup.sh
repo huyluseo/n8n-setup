@@ -8,11 +8,28 @@ trap 'echo -e "\n\033[0;31m[ERROR]\033[0m Lỗi ở dòng $LINENO – dừng scr
 wait_for_apt() {
   local lock=/var/lib/dpkg/lock-frontend waited=0
   while fuser "$lock" &>/dev/null; do
-    (( waited == 0 )) && echo -e "\033[0;33m[INFO]\033[0m apt đang bận – chờ …"
-    sleep 5; (( waited+=5 ))
-    (( waited >= 300 )) && { echo -e "\033[0;31m[ERROR]\033[0m Chờ apt 5′ vẫn khoá."; exit 1; }
+    (( waited == 0 )) && echo -e "\033[0;33m[INFO]\033[0m apt đang bận – theo dõi tiến trình:"
+
+    # Lấy PID đầu tiên giữ lock
+    read -r pid _ < <(lsof -t "$lock" | head -n1)
+
+    if [[ -n $pid ]]; then
+      cmd=$(ps -p "$pid" -o cmd= 2>/dev/null | cut -c1-40)
+      printf "\r🕒  Đã chờ %3d s | PID %-5s: %-40s" "$waited" "$pid" "$cmd"
+    else
+      printf "\r🕒  Đã chờ %3d s | PID ?: (đang xác định)          " "$waited"
+    fi
+
+    sleep 5
+    (( waited+=5 ))
+    if (( waited >= 300 )); then
+      echo -e "\n\033[0;31m[ERROR]\033[0m Chờ 5 phút nhưng apt vẫn khóa – thoát!"
+      exit 1
+    fi
   done
+  echo -e "\n\033[0;32m[OK]\033[0m apt đã sẵn sàng."
 }
+
 
 ### ───── 0. UPDATE & UPGRADE HỆ THỐNG ──────────────────────────────────── ###
 echo -e "\n\033[0;34m[STEP] Cập nhật & nâng cấp hệ thống …\033[0m"

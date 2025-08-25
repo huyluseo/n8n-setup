@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# n8n-setup.sh v4 – n8n + Docker + PostgreSQL + Nginx + SSL  (Ubuntu 22.04)
+# n8n-setup.sh v4 FIXED – n8n + Docker + PostgreSQL + Nginx + SSL  (Ubuntu 22.04)
 # -------------------------------------------------------------------
 
 set -Eeuo pipefail
@@ -102,21 +102,8 @@ NGINX
 ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
 nginx -t && systemctl reload nginx
 
-### ───── 5. CÀI POSTGRESQL & TẠO DB ────────────────────────────────────── ###
-echo -e "\n\033[0;34m[STEP] Cài PostgreSQL…\033[0m"
-wait_for_apt; apt install -y -qq postgresql
-sudo -u postgres psql <<SQL
-DO \$\$BEGIN
- IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='$DB_USER') THEN
-   CREATE ROLE $DB_USER LOGIN PASSWORD '$DB_PASS';
- END IF;
-END\$\$;
-CREATE DATABASE $DB_NAME OWNER $DB_USER;
-ALTER USER $DB_USER WITH SUPERUSER;
-SQL
-sed -ri "s/^#?listen_addresses.*/listen_addresses = '*'/" /etc/postgresql/*/main/postgresql.conf
-echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/*/main/pg_hba.conf
-systemctl restart postgresql
+### ───── 5. KHÔNG CÀI POSTGRESQL TRÊN HOST (SỬ DỤNG DOCKER) ────────────── ###
+echo -e "\n\033[0;34m[STEP] PostgreSQL sẽ chạy trong Docker container…\033[0m"
 
 ### ───── 6. CÀI DOCKER & COMPOSE ───────────────────────────────────────── ###
 echo -e "\n\033[0;34m[STEP] Cài Docker (repo chính thức)…\033[0m"
@@ -163,7 +150,8 @@ DB_POSTGRESDB_USER=$DB_USER
 DB_POSTGRESDB_PASSWORD=$DB_PASS
 GENERIC_TIMEZONE=Asia/Ho_Chi_Minh
 ENV
-cat >"$APP/compose/docker-compose.yml" <<'COMPOSE'
+
+cat >"$APP/compose/docker-compose.yml" <<COMPOSE
 services:
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
@@ -171,19 +159,49 @@ services:
     env_file: .env
     ports: ["127.0.0.1:5678:5678"]
     volumes: ["../data:/home/node/.n8n"]
-    depends_on: [postgres]
+    depends_on: 
+      postgres:
+        condition: service_healthy
+    networks:
+      - n8n-network
+
   postgres:
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_POSTGRESDB_DATABASE}
-      POSTGRES_USER: ${DB_POSTGRESDB_USER}
-      POSTGRES_PASSWORD: ${DB_POSTGRESDB_PASSWORD}
-    volumes: ["pgdata:/var/lib/postgresql/data"]
-volumes: { pgdata: {} }
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASS}
+    volumes: 
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - n8n-network
+
+volumes: 
+  pgdata:
+
+networks:
+  n8n-network:
+    driver: bridge
 COMPOSE
+
 echo -e "\n\033[0;34m[STEP] Khởi chạy n8n…\033[0m"
 cd "$APP/compose" && docker compose up -d
+
+# Chờ database sẵn sàng
+echo -e "\n\033[0;34m[INFO] Chờ PostgreSQL khởi động hoàn tất…\033[0m"
+sleep 10
+
+# Kiểm tra logs
+echo -e "\n\033[0;34m[INFO] Kiểm tra trạng thái services…\033[0m"
+docker compose ps
+docker compose logs --tail=20 postgres
+docker compose logs --tail=20 n8n
 
 ### ───── 8. TÓM TẮT ────────────────────────────────────────────────────── ###
 cat <<EOF
@@ -192,13 +210,20 @@ cat <<EOF
 ║   🚀  N8N ĐÃ SẴN SÀNG TRÊN https://$DOMAIN  ║
 ╠═════════════════════════════════════════════╣
 ║ Basic-auth user : admin                     ║
-║ Basic-auth pass : $(grep N8N_BASIC_AUTH_PASSWORD .env | cut -d= -f2) ║
-║ DB  : $DB_NAME • User : $DB_USER • Pass : $DB_PASS          ║
+║ Basic-auth pass : $(grep N8N_BASIC_AUTH_PASSWORD "$APP/compose/.env" | cut -d= -f2) ║
+║ DB  : $DB_NAME • User : $DB_USER            ║
+║ DB Pass : $DB_PASS                          ║
 ╚═════════════════════════════════════════════╝
 
 Data dir   : $APP/data  
 Compose    : $APP/compose/docker-compose.yml  
 
+Lệnh hữu ích:
+  cd $APP/compose
+  docker compose logs -f        # Xem logs
+  docker compose restart n8n    # Khởi động lại n8n
+  docker compose down           # Dừng services
+  docker compose up -d          # Khởi động services
+
 Chúc bạn làm việc hiệu quả! 🎉
 EOF
-
